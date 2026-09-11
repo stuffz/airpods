@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AirPods
+Comment=AirPods battery, noise control and lid detection in the system tray
+Exec=/usr/bin/airpods
+Icon=airpods
+Categories=Utility;Settings;
+Terminal=false
+StartupNotify=false

@@ -1,0 +1,18 @@
+# Build output
+build/
+*.o
+*.d
+
+# Logs
+*.log
+
+# IDE files
+.cache/
+.clangd
+compile_commands.json
+.vscode/
+
+# Temporary files
+*.tmp
+*.bak
+*~

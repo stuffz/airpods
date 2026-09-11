@@ -1,0 +1,51 @@
+# Run with: make lint (clang-tidy inside the build container).
+#
+# clang-diagnostic-* is included on purpose: it is what surfaces compiler
+# warnings such as -Winconsistent-missing-override, which the -Wall -Wextra
+# build was missing.
+Checks: >
+  -*,
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  misc-*,
+  cert-*,
+  -bugprone-easily-swappable-parameters,
+  -misc-non-private-member-variables-in-classes,
+  -misc-const-correctness,
+  -performance-avoid-endl,
+  -performance-enum-size,
+  -portability-avoid-pragma-once
+
+# Why the exclusions:
+#
+#   bugprone-easily-swappable-parameters   Byte-span helpers take (pointer, size)
+#                                          runs by design.
+#   misc-non-private-member-variables-in-classes
+#                                          The plain packet structs are aggregates.
+#   misc-const-correctness                 Advises const on move-from locals and
+#                                          std::lock_guard, where it is pointless.
+#   performance-avoid-endl                 The console log path wants the flush so
+#                                          debug output appears immediately when piped.
+#   performance-enum-size                  A handful of small enums, none stored in bulk.
+#   portability-avoid-pragma-once          Project-wide convention; every targeted
+#                                          compiler supports it.
+#
+# IgnoreHeaders:
+#   bits/*        glibc internals (sigset_t lives in bits/types/sigset_t.h);
+#                 <csignal> is the include one actually writes.
+#   sys/poll.h    glibc declares poll() and pollfd there, but <poll.h> is the
+#                 POSIX spelling and the one include-cleaner cannot map to it.
+#   systemd/*     sd-bus splits its types across sd-bus-protocol.h and
+#                 _sd-common.h; <systemd/sd-bus.h> is the documented entry point.
+
+CheckOptions:
+  misc-include-cleaner.IgnoreHeaders: 'bits/.*;sys/poll\.h;systemd/.*'
+
+HeaderFilterRegex: 'src/.*'
+
+# WarningsAsErrors intentionally lives in the lint target, not here: clangd reads
+# this file too, and promoting everything to errors makes every editor
+# diagnostic red.

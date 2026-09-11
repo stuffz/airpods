@@ -1,0 +1,38 @@
+#pragma once
+
+// The AirPods case silhouette drawn in the tray icon. Embedded rather than
+// installed: one small asset, and nothing to resolve or fail at runtime.
+//
+// Icon by Abbidzart via the Noun Project; the attribution text the download
+// carried has been lifted out of the artwork into ATTRIBUTION.md, and the
+// view box tightened to the glyph so it fills the icon.
+
+#include <QByteArray>
+#include <QLatin1String>
+
+namespace ui
+{
+
+inline QByteArray AirPodsGlyph()
+{
+    return QByteArray(
+        QLatin1String(
+            R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 12 100 76"><path d="m28.223 34.371c0-1.7227 1.3945-3.1172 3.1172-3.1172h37.32c1.7227 0 3.1172 1.3945 3.1172 3.1172v0.94531h26.863c-0.67188-12.168-10.75-21.824-23.086-21.824l-51.113-0.003907c-12.336 0-22.414 9.6602-23.086 21.828h26.863v-0.94922z"/><path d="m98.68 36.586h-26.902v0.94531c0 1.7227-1.3945 3.1172-3.1172 3.1172h-37.32c-1.7227 0-3.1172-1.3945-3.1172-3.1172v-0.94922l-26.902 0.003907v0.027343 26.773c0 12.77 10.352 23.121 23.121 23.121h51.113c12.77 0 23.121-10.352 23.121-23.121v-26.773-0.027343zm-48.68 28.43c-2.8281 0-5.125-2.293-5.125-5.125 0-2.8281 2.293-5.125 5.125-5.125 2.8281 0 5.125 2.293 5.125 5.125 0 2.8281-2.293 5.125-5.125 5.125z"/></svg>)SVG"
+        )
+            .data()
+    );
+}
+
+// The launcher and window icon: the same silhouette, white on a near-black
+// rounded square. The tray needs the bare glyph instead, so both live here.
+inline QByteArray AirPodsAppIcon()
+{
+    return QByteArray(
+        QLatin1String(
+            R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">  <rect width="512" height="512" rx="102" ry="102" fill="#0a0a0c"/>  <g transform="translate(97.28 97.28) scale(3.1744)" fill="#ececec"><path d="m28.223 34.371c0-1.7227 1.3945-3.1172 3.1172-3.1172h37.32c1.7227 0 3.1172 1.3945 3.1172 3.1172v0.94531h26.863c-0.67188-12.168-10.75-21.824-23.086-21.824l-51.113-0.003907c-12.336 0-22.414 9.6602-23.086 21.828h26.863v-0.94922z"/><path d="m98.68 36.586h-26.902v0.94531c0 1.7227-1.3945 3.1172-3.1172 3.1172h-37.32c-1.7227 0-3.1172-1.3945-3.1172-3.1172v-0.94922l-26.902 0.003907v0.027343 26.773c0 12.77 10.352 23.121 23.121 23.121h51.113c12.77 0 23.121-10.352 23.121-23.121v-26.773-0.027343zm-48.68 28.43c-2.8281 0-5.125-2.293-5.125-5.125 0-2.8281 2.293-5.125 5.125-5.125 2.8281 0 5.125 2.293 5.125 5.125 0 2.8281-2.293 5.125-5.125 5.125z"/></g></svg>)SVG"
+        )
+            .data()
+    );
+}
+
+} // namespace ui
