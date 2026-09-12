@@ -125,11 +125,11 @@ The fetcher writes `$XDG_CONFIG_HOME/airpods/proximity-keys` (default `~/.config
 
 ## Freshness and troubleshooting
 
-The [scanner](../src/bt/ble_scanner.hpp) starts BlueZ discovery with `Transport=le` and `DuplicateData=true`, then forwards Apple `ManufacturerData` from D-Bus device events. It waits for a powered adapter and requests discovery again when BlueZ reports discovery stopped.
+The [scanner](../src/bt/ble_scanner.hpp) starts BlueZ discovery with `Transport=le` and `DuplicateData=true`, then forwards Apple `ManufacturerData` from D-Bus device events. It waits for a powered adapter and requests discovery again when BlueZ reports discovery stopped. `org.bluez.Error.InProgress` means the session is already there and counts as success. Every minute it also reconciles its own state against the adapter's, since a restart that failed leaves no signal to retry on. The connection is private rather than the shared default bus, so a dead one can be replaced without disturbing the other BlueZ users in the process.
 
 The case was observed advertising about once per second over legacy `ADV_IND`, LE 1M, with the lid open or shut. Delivery was sparser even with that configuration: one 30-second capture yielded six HCI reports and three distinct payloads in the app. These are measured rates, not a guaranteed update interval.
 
-The [battery store](../src/core/battery_store.hpp) saves known levels and charging states with one timestamp in `$XDG_STATE_HOME/airpods/last-battery` (default `~/.local/state/airpods/last-battery`). At startup, the tray shows the loaded cache's age as “Last seen”. That age does not advance during the session and is cleared by a battery callback or accepted BLE merge, even if some components retain older values. There is no per-component freshness timer.
+The [battery store](../src/core/battery_store.hpp) saves known levels and charging states with one timestamp in `$XDG_STATE_HOME/airpods/last-battery` (default `~/.local/state/airpods/last-battery`). At startup, the tray shows the loaded cache's age as “Last seen”, advancing it by the running time, and clears it on a battery callback or accepted BLE merge even if some components retain older values. There is no per-component freshness timer. A fault outranks the age on that line: no adapter, Bluetooth off, discovery not running, or missing keys. With the radio off the tray icon empties its ring and shows a red dot in place of the charging bolt.
 
 | Symptom | What to check |
 | --- | --- |

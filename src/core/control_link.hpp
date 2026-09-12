@@ -12,11 +12,13 @@
 #else
 #include "aap/session.hpp"
 #include "bt/bluez_devices.hpp"
+#include "core/logger.hpp"
 
 #include <QObject>
 #include <QSocketNotifier>
 #include <QTimer>
 
+#include <chrono>
 #include <memory>
 #include <utility>
 #endif
@@ -35,6 +37,8 @@ public:
     void Start(const std::string &) { throw std::logic_error("L2CAP is unavailable on Windows"); }
 
     void Stop() {}
+
+    void Recheck() {}
 
     bool IsOpen() const { return false; }
 
@@ -69,6 +73,21 @@ public:
         session.Close();
     }
 
+    // Answers the top-level audit. Buds that BlueZ does not list as connected
+    // are away rather than lost, and reaching for them there would only fail
+    // slowly and repeatedly; the scheduled retry already covers their return.
+    void Recheck()
+    {
+        if (session.IsOpen() || !Present())
+        {
+            return;
+        }
+
+        LOG_INFO("AirPods are connected but the control link is not; reopening");
+        retry.stop();
+        Open();
+    }
+
     bool IsOpen() const { return session.IsOpen(); }
 
     std::string Name() const { return name; }
@@ -82,8 +101,23 @@ public:
     void SetNoiseMode(aap::NoiseMode mode) { session.SetNoiseMode(mode); }
 
 private:
+    using Clock = std::chrono::steady_clock;
+
+    enum class Retry
+    {
+        Soon,
+        Later
+    };
+
     static constexpr int kPollMs = 500;
     static constexpr int kRetryMs = 5000;
+    // A link that opens but never answers is the buds wedged on their side,
+    // which no reconnect clears. Retrying that at kRetryMs would seize and drop
+    // the single-holder control link every fifteen seconds, for nothing.
+    static constexpr int kWedgedRetryMs = 60000;
+    // The buds answer the handshake in well under a second when they are
+    // listening at all.
+    static constexpr auto kHandshakeTimeout = std::chrono::seconds(10);
 
     void Open()
     {
@@ -100,10 +134,11 @@ private:
         }
         if (address.empty() || !session.Connect(address))
         {
-            ScheduleRetry();
+            ScheduleRetry(Retry::Soon);
             return;
         }
 
+        openedAt = Clock::now();
         notifier = std::make_unique<QSocketNotifier>(session.Descriptor(), QSocketNotifier::Read);
         QObject::connect(notifier.get(), &QSocketNotifier::activated, [this] { Poll(); });
         changed();
@@ -111,24 +146,62 @@ private:
 
     void Poll()
     {
-        if (!session.IsOpen() || session.Poll(0))
+        if (!session.IsOpen())
         {
             return;
         }
+
+        if (!session.Poll(0))
+        {
+            Drop(Retry::Soon);
+            return;
+        }
+
+        if (session.IsReady() || Clock::now() - openedAt < kHandshakeTimeout)
+        {
+            return;
+        }
+
+        LOG_WARN("No handshake from the AirPods; dropping the link and backing off");
+        Drop(Retry::Later);
+    }
+
+    void Drop(Retry when)
+    {
         notifier.reset();
         session.Close();
         changed();
-        ScheduleRetry();
+        ScheduleRetry(when);
     }
 
-    void ScheduleRetry()
+    void ScheduleRetry(Retry when)
     {
         if (!retry.isSingleShot())
         {
             retry.setSingleShot(true);
             QObject::connect(&retry, &QTimer::timeout, [this] { Open(); });
         }
-        retry.start(kRetryMs);
+        retry.start(when == Retry::Soon ? kRetryMs : kWedgedRetryMs);
+    }
+
+    bool Present() const
+    {
+        const auto devices = discovery.List();
+
+        if (requested.empty())
+        {
+            return bt::BluezDevices::PickAirPods(devices) != nullptr;
+        }
+
+        for (const auto &device : devices)
+        {
+            if (device.address == requested)
+            {
+                return device.connected;
+            }
+        }
+
+        return false;
     }
 
     bt::BluezDevices discovery;
@@ -139,6 +212,7 @@ private:
     std::string requested;
     std::string name;
     std::function<void()> changed;
+    Clock::time_point openedAt;
 #endif
 };
 

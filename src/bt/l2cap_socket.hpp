@@ -4,6 +4,7 @@
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/l2cap.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -43,7 +44,7 @@ public:
             return false;
         }
 
-        fd = ::socket(AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_CLOEXEC, BTPROTO_L2CAP);
+        fd = ::socket(AF_BLUETOOTH, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, BTPROTO_L2CAP);
         if (fd < 0)
         {
             LOG_ERROR(std::string("socket(AF_BLUETOOTH): ") + std::strerror(errno));
@@ -56,9 +57,16 @@ public:
         addr.l2_bdaddr = *peer;
         addr.l2_bdaddr_type = BDADDR_BREDR;
 
-        if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+        if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0 &&
+            errno != EINPROGRESS)
         {
             LOG_ERROR("connect(" + address + "): " + std::strerror(errno));
+            Close();
+            return false;
+        }
+
+        if (!AwaitConnected(address) || !RestoreBlocking())
+        {
             Close();
             return false;
         }
@@ -159,6 +167,61 @@ public:
     }
 
 private:
+    // BlueZ can go on reporting a device as connected after its ACL is gone,
+    // and a blocking connect would then sit through the baseband page timeout
+    // on whichever thread asked. Bounded so the caller can retry instead.
+    static constexpr int kConnectTimeoutMs = 5000;
+
+    bool AwaitConnected(const std::string &address) const
+    {
+        pollfd pfd{fd, POLLOUT, 0};
+        const int ready = ::poll(&pfd, 1, kConnectTimeoutMs);
+
+        if (ready < 0)
+        {
+            LOG_ERROR(std::string("poll: ") + std::strerror(errno));
+            return false;
+        }
+
+        if (ready == 0)
+        {
+            LOG_ERROR("connect(" + address + "): timed out");
+            return false;
+        }
+
+        int failure = 0;
+        socklen_t size = sizeof(failure);
+
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) < 0)
+        {
+            LOG_ERROR(std::string("getsockopt(SO_ERROR): ") + std::strerror(errno));
+            return false;
+        }
+
+        if (failure != 0)
+        {
+            LOG_ERROR("connect(" + address + "): " + std::strerror(failure));
+            return false;
+        }
+
+        return true;
+    }
+
+    // Back to blocking for the rest of the session: Send has no partial-write
+    // path, and Receive only reads once poll says there is something there.
+    bool RestoreBlocking() const
+    {
+        const int flags = ::fcntl(fd, F_GETFL, 0);
+
+        if (flags < 0 || ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0)
+        {
+            LOG_ERROR(std::string("fcntl: ") + std::strerror(errno));
+            return false;
+        }
+
+        return true;
+    }
+
     // Hand-rolled rather than str2ba() so the build needs only the BlueZ
     // headers, not libbluetooth. bdaddr_t stores the address in reverse order.
     static std::optional<bdaddr_t> ParseAddress(const std::string &address)

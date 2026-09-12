@@ -25,12 +25,18 @@
 namespace ui
 {
 
+enum class Radio
+{
+    On,
+    Off
+};
+
 // Rendered rather than loaded from PNGs: two pods means two levels, and one
 // pixmap per level pair is a combinatorial mess of files to ship.
 class BatteryIcon
 {
 public:
-    static QIcon Render(const aap::Battery &battery)
+    static QIcon Render(const aap::Battery &battery, Radio radio)
     {
         QPixmap canvas(kCanvasWidth, kCanvasHeight);
         canvas.fill(Qt::transparent);
@@ -38,15 +44,14 @@ public:
         QPainter painter(&canvas);
         painter.setRenderHint(QPainter::Antialiasing, true);
 
-        const aap::ComponentBattery shown = Worst(battery);
+        // A ring left showing the last reading while the radio is off would
+        // claim a level nothing can currently confirm, so it empties out.
+        const aap::ComponentBattery shown =
+            radio == Radio::On ? Worst(battery) : aap::ComponentBattery{};
 
         DrawGlyph(painter);
         DrawRing(painter, shown);
-
-        if (shown.known && shown.status == aap::ChargeStatus::Charging)
-        {
-            DrawBoltBadge(painter);
-        }
+        DrawBadge(painter, shown, radio);
 
         painter.end();
         return QIcon(canvas);
@@ -159,18 +164,33 @@ private:
         painter.drawArc(bounds, kArcStart, -span);
     }
 
-    static void DrawBoltBadge(QPainter &painter)
+    static void DrawBadge(QPainter &painter, const aap::ComponentBattery &state, Radio radio)
     {
-        const QPointF centre(kBadgeCentre, kBadgeCentre);
+        if (radio == Radio::Off)
+        {
+            DrawDisc(painter, OffColor());
+            return;
+        }
 
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(BadgeColor());
-        painter.drawEllipse(centre, kBadgeRadius, kBadgeRadius);
+        if (!state.known || state.status != aap::ChargeStatus::Charging)
+        {
+            return;
+        }
+
+        DrawDisc(painter, BadgeColor());
 
         const double half = kBadgeBoltSize / 2;
         DrawBolt(
-            painter, QRectF(centre.x() - half, centre.y() - half, kBadgeBoltSize, kBadgeBoltSize)
+            painter,
+            QRectF(kBadgeCentre - half, kBadgeCentre - half, kBadgeBoltSize, kBadgeBoltSize)
         );
+    }
+
+    static void DrawDisc(QPainter &painter, const QColor &colour)
+    {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(colour);
+        painter.drawEllipse(QPointF(kBadgeCentre, kBadgeCentre), kBadgeRadius, kBadgeRadius);
     }
 
     static QColor LevelColor(const aap::ComponentBattery &state)
@@ -191,6 +211,8 @@ private:
     static QColor UnknownColor() { return {0x61, 0x61, 0x61}; }
 
     static QColor BadgeColor() { return {0x21, 0x21, 0x21}; }
+
+    static QColor OffColor() { return {0xd3, 0x2f, 0x2f}; }
 };
 
 } // namespace ui

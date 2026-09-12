@@ -40,9 +40,11 @@ Checks: >
 #                 POSIX spelling and the one include-cleaner cannot map to it.
 #   systemd/*     sd-bus splits its types across sd-bus-protocol.h and
 #                 _sd-common.h; <systemd/sd-bus.h> is the documented entry point.
+#   asm-generic/* SOL_SOCKET and SO_ERROR are defined there and reach the
+#                 program through <sys/socket.h>, which is the POSIX spelling.
 
 CheckOptions:
-  misc-include-cleaner.IgnoreHeaders: 'bits/.*;sys/poll\.h;systemd/.*'
+  misc-include-cleaner.IgnoreHeaders: 'asm-generic/.*;bits/.*;sys/poll\.h;systemd/.*'
 
 HeaderFilterRegex: 'src/.*'
 

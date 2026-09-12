@@ -25,16 +25,12 @@ class BleScanner
 public:
     using Handler = std::function<void(const std::string &, std::span<const uint8_t>)>;
 
-    BleScanner() { sd_bus_default_system(&bus); }
+    BleScanner() = default;
 
     ~BleScanner()
     {
         Stop();
-
-        if (bus != nullptr)
-        {
-            sd_bus_unref(bus);
-        }
+        Discard();
     }
 
     BleScanner(const BleScanner &) = delete;
@@ -47,30 +43,59 @@ public:
     // when BlueZ drops it. False only when the bus is unusable.
     bool Start(uint16_t vendor)
     {
-        if (bus == nullptr)
-        {
-            LOG_ERROR("No connection to the system bus; is dbus running?");
-            return false;
-        }
-
         wanted = vendor;
         active = true;
+        return Begin();
+    }
 
-        if (!AddMatches())
+    // The descriptor changes with the connection, so whatever was watching the
+    // old one has to be pointed at the new one afterwards.
+    bool Reopen()
+    {
+        Discard();
+        return Begin();
+    }
+
+    // Every other path here is driven by a signal, so a StartDiscovery that
+    // failed or a Discovering signal that never arrived leaves nothing to
+    // retry on. This is the one check that does not wait to be told.
+    //
+    // Discovering is the adapter's, not this client's: another client scanning
+    // reads as healthy even once our own session is gone. BlueZ offers no
+    // per-client answer, so that case is left to the advertisements drying up.
+    void Recheck()
+    {
+        if (!active || bus == nullptr)
         {
-            return false;
+            return;
         }
 
-        adapter = FindAdapter();
         if (adapter.empty())
         {
-            LOG_WARN("No Bluetooth adapter published by BlueZ; scanning starts when one appears");
-            return true;
+            adapter = FindAdapter();
+        }
+
+        if (scanning && ReadAdapterFlag("Discovering"))
+        {
+            return;
+        }
+
+        if (scanning)
+        {
+            LOG_WARN("Discovery is off although it was believed on; restarting");
+            scanning = false;
         }
 
         TryDiscovery();
-        return true;
     }
+
+    bool IsScanning() const { return scanning; }
+
+    bool HasAdapter() const { return !adapter.empty(); }
+
+    // Kept from the signal rather than read back: the tray repaints far more
+    // often than an adapter changes its mind.
+    bool IsPowered() const { return powered; }
 
     void Stop()
     {
@@ -125,6 +150,63 @@ public:
     }
 
 private:
+    // BlueZ answers this when the caller already has what it asked for, which
+    // is the wanted state rather than a failure.
+    static constexpr const char *kInProgressError = "org.bluez.Error.InProgress";
+
+    // Every call below blocks the thread that makes it, which is the one
+    // painting the tray. Measured round trips here are under a millisecond, so
+    // this sits far above anything healthy and far below sd-bus's 25s default.
+    static constexpr uint64_t kCallTimeoutUs = 2000000;
+
+    bool Begin()
+    {
+        if (bus == nullptr)
+        {
+            const int opened = sd_bus_open_system(&bus);
+            if (opened < 0)
+            {
+                bus = nullptr;
+                LOG_ERROR(std::string("Cannot reach the system bus: ") + std::strerror(-opened));
+                return false;
+            }
+
+            sd_bus_set_method_call_timeout(bus, kCallTimeoutUs);
+        }
+
+        if (!AddMatches())
+        {
+            return false;
+        }
+
+        adapter = FindAdapter();
+        if (adapter.empty())
+        {
+            LOG_WARN("No Bluetooth adapter published by BlueZ; scanning starts when one appears");
+            return true;
+        }
+
+        TryDiscovery();
+        return true;
+    }
+
+    // A private connection rather than the shared default, so a dead one can
+    // be thrown away without disturbing anything else in the process that
+    // talks to BlueZ over the same bus.
+    void Discard()
+    {
+        if (bus != nullptr)
+        {
+            sd_bus_flush_close_unref(bus);
+            bus = nullptr;
+        }
+
+        matched = false;
+        scanning = false;
+        powered = false;
+        adapter.clear();
+    }
+
     void TryDiscovery()
     {
         if (!active || scanning || adapter.empty())
@@ -132,7 +214,8 @@ private:
             return;
         }
 
-        if (!ReadAdapterFlag("Powered"))
+        powered = ReadAdapterFlag("Powered");
+        if (!powered)
         {
             LOG_INFO("Bluetooth is off; scanning starts when it is powered on");
             return;
@@ -263,7 +346,9 @@ private:
             bus, "org.bluez", path, "org.bluez.Adapter1", method, &error, nullptr, ""
         );
 
-        if (status < 0)
+        const bool alreadyDone = sd_bus_error_has_name(&error, kInProgressError) != 0;
+
+        if (status < 0 && !alreadyDone)
         {
             LOG_ERROR(
                 std::string(method) + ": " +
@@ -272,7 +357,7 @@ private:
         }
 
         sd_bus_error_free(&error);
-        return status >= 0;
+        return status >= 0 || alreadyDone;
     }
 
     bool AddMatches()
@@ -381,6 +466,8 @@ private:
 
     void OnPowered(bool on)
     {
+        powered = on;
+
         if (on)
         {
             LOG_INFO("Bluetooth powered on");
@@ -594,6 +681,7 @@ private:
     bool active = false;
     bool matched = false;
     bool scanning = false;
+    bool powered = false;
 };
 
 } // namespace bt

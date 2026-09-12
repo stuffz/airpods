@@ -16,6 +16,7 @@
 #include "core/logger.hpp"
 #include "core/options.hpp"
 #include "core/stop_flag.hpp"
+#include "ui/battery_icon.hpp"
 #include "ui/main_window.hpp"
 #include "ui/tray_icon.hpp"
 
@@ -50,13 +51,14 @@ public:
         tray.Show();
         tray.OnQuit([] { QApplication::quit(); });
         staleness = store.Load(battery);
+        startedAt = Clock::now();
+        lastArrival = startedAt;
+        nextAudit = startedAt + kQuietTimeout;
 
-        Refresh(false);
-        tray.OnActivate([this] { window.Toggle(); });
-        tray.OnShowDetails([this] { window.Toggle(); });
+        tray.OnActivate([this] { Reveal(); });
+        tray.OnShowDetails([this] { Reveal(); });
         tray.OnNoiseMode([this](aap::NoiseMode mode) { link.SetNoiseMode(mode); });
         window.OnModePicked([this](aap::NoiseMode mode) { link.SetNoiseMode(mode); });
-        tray.Update(battery, false);
         link.OnNoiseMode(
             [this](std::span<const uint8_t> packet)
             {
@@ -72,7 +74,7 @@ public:
             [this](std::span<const uint8_t> packet)
             {
                 battery.Parse(packet);
-                staleness.reset();
+                Arrived();
                 Refresh(true);
                 store.Save(battery);
             }
@@ -91,14 +93,22 @@ public:
             link.Start(options.address);
         }
 
+        lastRadio = RadioState();
+        Refresh(link.IsOpen());
+
         const int result = QApplication::exec();
         link.Stop();
         return result;
     }
 
 private:
+    using Clock = std::chrono::steady_clock;
+
     static constexpr int kFailure = 1;
     static constexpr int kTickMs = 500;
+    // Long enough that a quiet stretch is genuinely unusual: the pods broadcast
+    // every second or two whenever they are awake and anywhere near.
+    static constexpr auto kQuietTimeout = std::chrono::minutes(10);
 
     bool StartScanning()
     {
@@ -112,8 +122,8 @@ private:
         }
         scanner.OnAdvertisement([this](const std::string &address, std::span<const uint8_t> data)
                                 { OnAdvertisement(address, data); });
-        scanner.OnError([] { QApplication::exit(kFailure); });
-        return scanner.Start(aap::kAppleVendorId);
+        scanner.Start(aap::kAppleVendorId);
+        return true;
     }
 
     // Two broadcasts carry battery: the pods' 25-byte proximity message and the
@@ -247,9 +257,15 @@ private:
             Describe(battery)
         );
 
-        staleness.reset();
+        Arrived();
         Refresh(connected);
         store.Save(battery);
+    }
+
+    void Arrived()
+    {
+        staleness.reset();
+        lastArrival = Clock::now();
     }
 
     // The private address rotates on every lid open, so the state that decides
@@ -312,15 +328,120 @@ private:
         if (stopRequested != 0)
         {
             QApplication::quit();
+            return;
         }
+
+        WatchRadio();
+
+        const auto now = Clock::now();
+        if (now < nextAudit || now - lastArrival < kQuietTimeout)
+        {
+            return;
+        }
+
+        nextAudit = now + kQuietTimeout;
+        Audit();
+    }
+
+    // Worth showing the moment it happens rather than at the next audit: it
+    // explains everything else at a glance.
+    void WatchRadio()
+    {
+        const ui::Radio radio = RadioState();
+        if (radio == lastRadio)
+        {
+            return;
+        }
+
+        lastRadio = radio;
+        Refresh(link.IsOpen());
+    }
+
+    ui::Radio RadioState() const { return scanner.IsPowered() ? ui::Radio::On : ui::Radio::Off; }
+
+    // Pods that are away are the ordinary reason for a long silence, so each
+    // subsystem checks itself rather than anyone reaching for hardware that may
+    // not be there.
+    void Audit()
+    {
+        scanner.Recheck();
+        link.Recheck();
+
+        LOG_WARN("No battery report in a long time: " + Status());
+        Refresh(link.IsOpen());
+    }
+
+    // Ordered so the most actionable wins: a scanner that is not running hides
+    // everything underneath it. Derived rather than remembered, so it can
+    // neither outlive its cause nor miss one appearing between audits.
+    std::string Trouble() const
+    {
+        if (!scanner.HasAdapter())
+        {
+            return "Error: no Bluetooth adapter";
+        }
+
+        if (!scanner.IsPowered())
+        {
+            return "Error: Bluetooth is off";
+        }
+
+        if (!scanner.IsScanning())
+        {
+            return "Error: Bluetooth scanning is not running";
+        }
+
+        if (!keys.HasEncryption())
+        {
+            return "Error: no proximity keys, run --keys";
+        }
+
+        return {};
     }
 
     void Refresh(bool connected)
     {
-        tray.Update(battery, connected);
+        tray.Update(battery, connected, RadioState());
         window.Update(battery, Heading());
         window.ShowLink(connected ? aap::LinkState::Up : aap::LinkState::Down);
-        window.ShowAge(staleness ? "Last seen " + Age(*staleness) : std::string{});
+        window.ShowAge(Status());
+    }
+
+    // The window keeps one line for this, so a fault wins over the age: how old
+    // a reading is only matters while everything that could refresh it works.
+    std::string Status() const
+    {
+        std::string fault = Trouble();
+        if (!fault.empty())
+        {
+            return fault;
+        }
+
+        const bool quiet = Clock::now() - lastArrival >= kQuietTimeout;
+
+        if (quiet && link.IsOpen())
+        {
+            return "Error: connected but silent";
+        }
+
+        if (staleness)
+        {
+            // Plus this run's own time: a stored reading does not get any
+            // fresher while the app sits here without a new one.
+            const auto ran =
+                std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - startedAt);
+            return "Last seen " + Age(*staleness + ran);
+        }
+
+        return quiet ? "No AirPods in range, Bluetooth is on" : std::string{};
+    }
+
+    // Refreshed on the way out so the age on it is current whenever it is
+    // actually looked at, rather than repainted twice a second for nobody.
+    void Reveal()
+    {
+        Refresh(link.IsOpen());
+        window.Toggle();
     }
 
     static std::string Age(std::chrono::seconds since)
@@ -368,6 +489,10 @@ private:
     KeyStore keys;
     BatteryStore store;
     std::optional<std::chrono::seconds> staleness;
+    ui::Radio lastRadio = ui::Radio::On;
+    Clock::time_point startedAt;
+    Clock::time_point lastArrival;
+    Clock::time_point nextAudit;
 };
 
 } // namespace core

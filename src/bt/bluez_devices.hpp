@@ -4,6 +4,7 @@
 
 #include <systemd/sd-bus.h>
 
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -26,13 +27,19 @@ struct BluezDevice
 class BluezDevices
 {
 public:
-    BluezDevices() { sd_bus_default_system(&bus); }
+    BluezDevices()
+    {
+        if (sd_bus_open_system(&bus) >= 0)
+        {
+            sd_bus_set_method_call_timeout(bus, kCallTimeoutUs);
+        }
+    }
 
     ~BluezDevices()
     {
         if (bus != nullptr)
         {
-            sd_bus_unref(bus);
+            sd_bus_flush_close_unref(bus);
         }
     }
 
@@ -103,6 +110,7 @@ public:
     }
 
 private:
+    static constexpr uint64_t kCallTimeoutUs = 2000000;
     static constexpr const char *kDeviceInterface = "org.bluez.Device1";
     static constexpr const char *kAppleModaliasPrefix = "bluetooth:v004C";
 

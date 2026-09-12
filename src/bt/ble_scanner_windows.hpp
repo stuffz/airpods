@@ -49,6 +49,10 @@ public:
             throw std::logic_error("BLE scanner is already started");
         }
 
+        // Set before anything can fail: Reopen starts again from it, and a
+        // failed start would otherwise leave it asking for vendor zero.
+        wanted = vendor;
+
         try
         {
             winrt::init_apartment(winrt::apartment_type::single_threaded);
@@ -128,6 +132,39 @@ public:
         }
     }
 
+    // On Windows the watcher object is the connection the Linux scanner reopens.
+    bool Reopen()
+    {
+        Stop();
+        return Start(wanted);
+    }
+
+    // Covers a status that changed without the Stopped event arriving.
+    void Recheck()
+    {
+        const auto status = CurrentStatus();
+
+        if (status == WatcherStatus::Started || status == WatcherStatus::Stopping)
+        {
+            return;
+        }
+
+        // Reported rather than restarted here: restarting would leave the watch
+        // polling a scanner that a failed Start has already emptied, and
+        // Process would throw into the event loop.
+        Fail("The BLE watcher is no longer running");
+    }
+
+    bool IsScanning() const { return CurrentStatus() == WatcherStatus::Started; }
+
+    // WinRT exposes no adapter object of its own behind the watcher, so this
+    // and IsPowered answer the same question here.
+    bool HasAdapter() const { return watcher != nullptr; }
+
+    // Windows does not expose the radio itself either. An aborted watcher is
+    // the closest signal, and switching the radio off is what produces one.
+    bool IsPowered() const { return watcher && CurrentStatus() != WatcherStatus::Aborted; }
+
     void Stop()
     {
         received.revoke();
@@ -183,7 +220,39 @@ public:
 private:
     using Watcher =
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher;
+    using WatcherStatus = Advertisement::BluetoothLEAdvertisementWatcherStatus;
     static constexpr size_t kMaxQueued = 4096;
+
+    // So every way of noticing a dead watcher leaves through Process.
+    void Fail(const std::string &reason)
+    {
+        if (!state)
+        {
+            return;
+        }
+
+        std::lock_guard lock(state->mutex);
+        state->error = reason;
+        state->ready.notify_one();
+    }
+
+    WatcherStatus CurrentStatus() const
+    {
+        if (!watcher)
+        {
+            return WatcherStatus::Stopped;
+        }
+
+        try
+        {
+            return watcher.Status();
+        }
+        catch (const winrt::hresult_error &error)
+        {
+            LOG_ERROR("Reading the BLE watcher status: " + winrt::to_string(error.message()));
+            return WatcherStatus::Aborted;
+        }
+    }
 
     struct Packet
     {
@@ -218,6 +287,7 @@ private:
     }
 
     Handler handler;
+    uint16_t wanted = 0;
     std::shared_ptr<State> state;
     Watcher watcher{nullptr};
     Watcher::Received_revoker received;

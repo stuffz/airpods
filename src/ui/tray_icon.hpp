@@ -61,7 +61,7 @@ public:
         // Showing a tray item that has no icon yet warns and leaves a gap until
         // the first report lands. An empty battery renders what Update() would
         // draw for one anyway: the glyph with an unfilled ring.
-        icon->setIcon(BatteryIcon::Render(aap::Battery{}));
+        icon->setIcon(BatteryIcon::Render(aap::Battery{}, Radio::On));
         icon->setContextMenu(menu.get());
 
         // Plasma's StatusNotifierItem delivers a plain left click as Trigger and
@@ -109,20 +109,20 @@ public:
         }
     }
 
-    void Update(const aap::Battery &battery, bool connected)
+    void Update(const aap::Battery &battery, bool connected, Radio radio)
     {
         if (!icon)
         {
             return;
         }
 
-        icon->setIcon(BatteryIcon::Render(battery));
+        icon->setIcon(BatteryIcon::Render(battery, radio));
 
         SetEntry(leftAction, battery, aap::Component::Left);
         SetEntry(rightAction, battery, aap::Component::Right);
         SetEntry(caseAction, battery, aap::Component::Case);
 
-        icon->setToolTip(QString::fromStdString(Tooltip(battery, connected)));
+        icon->setToolTip(QString::fromStdString(Tooltip(battery, connected, radio)));
 
         // Modes go over the control link; without it the menu would only lie.
         noiseMenuAction->setEnabled(connected);
@@ -198,8 +198,13 @@ private:
                std::string(aap::Battery::StatusName(state.status));
     }
 
-    static std::string Tooltip(const aap::Battery &battery, bool connected)
+    static std::string Tooltip(const aap::Battery &battery, bool connected, Radio radio)
     {
+        if (radio == Radio::Off)
+        {
+            return "Bluetooth is off";
+        }
+
         if (!battery.HasReading())
         {
             return connected ? "AirPods connected" : "Waiting for AirPods battery readings";

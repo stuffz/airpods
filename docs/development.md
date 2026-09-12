@@ -48,7 +48,7 @@ Without `--key-file`, Windows loads `%LOCALAPPDATA%/airpods/proximity-keys`. Cac
 
 Keys still have to come from Linux, but not necessarily from a Linux machine: WSL2 can fetch them by forwarding the adapter over USB/IP. See [WSL](wsl.md) for the adapter, firmware and pairing work that needs.
 
-Hardware checks still needed: exact left/right/case readings, closed case, audio playback, rotating pod addresses, Bluetooth off/on, and tray rendering. A stopped Windows scanner reports an error and exits; restart after restoring Bluetooth. Avoid `--debug` when sharing logs because it prints advertisement identifiers and payloads.
+Hardware checks still needed: exact left/right/case readings, closed case, audio playback, rotating pod addresses, Bluetooth off/on, and tray rendering. A stopped Windows scanner is restarted in place rather than ending the app, which is compile-checked only and still wants a run on real hardware. Avoid `--debug` when sharing logs because it prints advertisement identifiers and payloads.
 
 ## UI inspection
 

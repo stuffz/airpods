@@ -119,7 +119,9 @@ The [sample parser](../src/aap/head_tracking.hpp) requires at least 55 bytes, th
 
 ## Polling, disconnects and diagnosis
 
-The tray watches the socket through Qt and also polls every 500 ms to advance session timers. Read errors or closure tear down the session and schedule another connection attempt after five seconds. Failed connection attempts use the same delay. BLE scanning continues independently. An open but silent session does not trigger this reconnect path.
+The tray watches the socket through Qt and also polls every 500 ms to advance session timers. Read errors, closure and failed connection attempts tear down the session and schedule another attempt after five seconds. A session that opens but does not complete the handshake within ten seconds is also torn down, but retried after sixty: the buds ignoring a second AAP session is not something a reconnect clears, and retrying it at five seconds would seize and release the single-holder link continuously. BLE scanning continues independently.
+
+Ten minutes without a battery report from either source prompts a check of both. The scanner reconciles its discovery session, and the control link reopens only if BlueZ still lists the buds as connected, so buds that are simply away are left alone. The window's “Last seen” line carries whatever the check finds.
 
 The console exits on link loss rather than reconnecting. `--once` exits after printing a known battery reading; it has no overall timeout if reports never arrive.
 
