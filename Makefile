@@ -48,8 +48,16 @@ DOCKER ?= docker
 # GIT_HASH is resolved on the host and passed in: the hash describes the
 # checkout, not the image, and git is deliberately absent from the container.
 # The recipe's GIT_HASH ?= keeps an environment value, so this wins inside.
+# dbus-daemon refuses to serve a uid it cannot name, and the image has no entry
+# for the host user these run as, which the discovery test's private bus needs.
+# One generated line answers it and keeps the host's own passwd out of here.
+CONTAINER_PASSWD = $(BUILD_BASE)/container-passwd
+
 DOCKER_RUN = $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
-	-e GIT_HASH="$(GIT_HASH)" -v "$(CURDIR)":/work -w /work $(IMAGE)
+	-e GIT_HASH="$(GIT_HASH)" -e TEST_DIR="$(CONTAINER_TEST_DIR)" \
+	-e COVERAGE_DIR="$(CONTAINER_COVERAGE_DIR)" \
+	-v "$(CURDIR)/$(CONTAINER_PASSWD)":/etc/passwd:ro \
+	-v "$(CURDIR)":/work -w /work $(IMAGE)
 
 .PHONY: all build clean run help deps format format-check lint install uninstall \
 	image container-build container-lint container-format-check package
@@ -89,13 +97,18 @@ run: build
 image:
 	$(DOCKER) build -t $(IMAGE) .
 
-container-build: image
+$(CONTAINER_PASSWD):
+	mkdir -p "$(BUILD_BASE)"
+	printf 'root:x:0:0::/root:/bin/sh\nbuilder:x:%s:%s::/tmp:/bin/sh\n' \
+		"$(shell id -u)" "$(shell id -g)" > "$@"
+
+container-build: image $(CONTAINER_PASSWD)
 	$(DOCKER_RUN) make build
 
-container-lint: image
+container-lint: image $(CONTAINER_PASSWD)
 	$(DOCKER_RUN) make lint
 
-container-format-check: image
+container-format-check: image $(CONTAINER_PASSWD)
 	$(DOCKER_RUN) make format-check
 
 # ------------------------------------------------------------------ checks ---
@@ -128,13 +141,19 @@ format-check:
 # Headers are linted as standalone TUs: misc-include-cleaner only diagnoses the
 # main file, so a header-only project gets no include checking otherwise.
 LINT_HEADERS := $(shell find $(SRC_DIR) -name '*.hpp' ! -name '*_windows.hpp' | sort)
+# The tests go through the compile database instead of this flag list: each one
+# includes moc output that exists only under $(TEST_DIR), which is why linting
+# them means building them first.
+LINT_TESTS := $(shell find tests -name '*.cpp' -o -name '*.hpp' | sort)
 
-lint:
+lint: test-build
 	@command -v clang-tidy >/dev/null || { echo "clang-tidy not found (Arch: clang)"; exit 1; }
 	@printf '%s\n' $(SOURCES) $(LINT_HEADERS) | xargs -P $$(nproc) -I{} \
 		clang-tidy --quiet --warnings-as-errors='*' {} -- \
 		-xc++ -Wno-pragma-once-outside-header $(CXXFLAGS)
-	@echo "clang-tidy clean ($(words $(SOURCES) $(LINT_HEADERS)) files)"
+	@printf '%s\n' $(LINT_TESTS) | xargs -P $$(nproc) -I{} \
+		clang-tidy --quiet --warnings-as-errors='*' -p "$(TEST_DIR)" {}
+	@echo "clang-tidy clean ($(words $(SOURCES) $(LINT_HEADERS) $(LINT_TESTS)) files)"
 
 # ---------------------------------------------------------------- install ---
 install: build
@@ -166,11 +185,15 @@ help:
 	@echo "  deps                  - Check build dependencies"
 	@echo "  format                - Rewrite sources with clang-format"
 	@echo "  format-check          - Fail if any source is not clang-format clean"
-	@echo "  lint                  - Run clang-tidy"
+	@echo "  lint                  - Run clang-tidy over src and tests"
 	@echo "  image                 - Build the build container image"
 	@echo "  container-build       - Build inside the container"
 	@echo "  container-lint        - Run clang-tidy inside the container"
 	@echo "  container-format-check- Run clang-format check inside the container"
+	@echo "  test                  - Configure with CMake and run the CTest suite"
+	@echo "  container-test        - Run the CTest suite inside the container"
+	@echo "  coverage              - Run the suite and report covered lines per file"
+	@echo "  container-coverage    - Report covered lines inside the container"
 	@echo "  install               - Install under PREFIX (default /usr/local)"
 	@echo "  uninstall             - Remove installed files"
 	@echo "  package               - Build and install the Arch package from committed HEAD"
@@ -200,15 +223,59 @@ container-build-windows: windows-image
 		-v "$(CURDIR)":/work -w /work $(WINDOWS_IMAGE) \
 		cmake --build build/windows --parallel 4
 
-.PHONY: test container-test
-test: $(BUILD_DIR)/portable-test
-	$(BUILD_DIR)/portable-test $(BUILD_DIR)/test-keys.conf
+# ------------------------------------------------------------------- tests ---
+# CMake rather than this Makefile: QTest needs moc, and CMAKE_AUTOMOC plus
+# CTest is the whole of that rule.
+CMAKE ?= cmake
+CTEST ?= ctest
+# Host and container need separate directories: a CMake cache records the
+# absolute path it was configured at, and the container's is /work.
+TEST_DIR ?= $(BUILD_BASE)/test
+CONTAINER_TEST_DIR = $(BUILD_BASE)/test-container
+COVERAGE_DIR ?= $(BUILD_BASE)/coverage
+CONTAINER_COVERAGE_DIR = $(BUILD_BASE)/coverage-container
 
-$(BUILD_DIR)/portable-test: tests/portable.cpp $(wildcard src/aap/*.hpp src/bt/aes.hpp src/core/*.hpp) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $< -o $@ $(LIBS)
+# Qt6 adds this for itself, in the spelling GCC accepts. clangd and clang-tidy
+# are clang and reject it, so the database they read loses it. The build keeps
+# it: only the tooling copy is trimmed.
+GCC_ONLY_FLAG = -mno-direct-extern-access
 
-container-test: image
+.PHONY: test test-build container-test
+test-build:
+	$(CMAKE) -S . -B "$(TEST_DIR)" -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+	$(CMAKE) --build "$(TEST_DIR)" --parallel
+	sed -i 's/ $(GCC_ONLY_FLAG)//g' "$(TEST_DIR)/compile_commands.json"
+
+test: test-build
+	$(CTEST) --test-dir "$(TEST_DIR)" --output-on-failure
+
+# Which lines the suite reaches, per file. Read the columns, not the total: most
+# of src/ui is Qt painting and most of src/bt is socket work, neither of which a
+# unit test was ever going to enter, so a single percentage across all of it
+# measures the shape of the program rather than the tests.
+#
+# A separate directory from $(TEST_DIR): --coverage and -O0 are not what anyone
+# wants to run, and the counters would be mixed with the optimised build's.
+.PHONY: coverage container-coverage
+coverage:
+	$(CMAKE) -S . -B "$(COVERAGE_DIR)" -DCMAKE_BUILD_TYPE=Debug \
+		-DCMAKE_CXX_FLAGS="--coverage -O0 -g" -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+	$(CMAKE) --build "$(COVERAGE_DIR)" --parallel
+	$(CTEST) --test-dir "$(COVERAGE_DIR)" --output-on-failure
+	@command -v gcovr >/dev/null || { echo "gcovr not found (Arch: gcovr)"; exit 1; }
+	gcovr --root . --filter 'src/' --exclude '.*_windows\.hpp' \
+		--sort uncovered-percent --txt --print-summary
+
+container-coverage: image $(CONTAINER_PASSWD)
+	$(DOCKER_RUN) make coverage
+
+# The rewrite is what makes the database usable outside the container: /work is
+# this directory bind mounted, so the paths name the same files, generated moc
+# output included. clangd reads it in preference to compile_flags.txt, so no
+# flag list has to be kept by hand.
+container-test: image $(CONTAINER_PASSWD)
 	$(DOCKER_RUN) make test
+	sed 's|/work|$(CURDIR)|g' "$(CONTAINER_TEST_DIR)/compile_commands.json" > compile_commands.json
 
 .PHONY: wine-smoke
 wine-smoke:

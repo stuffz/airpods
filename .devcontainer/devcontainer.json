@@ -1,0 +1,29 @@
+{
+    // The same image make container-* uses, so what runs here and what runs in
+    // CI are the one toolchain.
+    //
+    //   devcontainer up
+    //   devcontainer exec make test
+    //
+    // Inside, use the plain targets: make test, make lint, make format-check,
+    // make coverage. The container-* ones start a container of their own and
+    // would need a docker socket in here to work.
+    "name": "airpods",
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "context": ".."
+    },
+    // /work, matching where make container-* mounts it: a CMake cache records
+    // the absolute path it was configured at, so a second path would mean a
+    // second build directory and a stale one either way.
+    "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+    "workspaceFolder": "/work",
+    "containerEnv": {
+        "TEST_DIR": "build/test-container",
+        "COVERAGE_DIR": "build/coverage-container"
+    },
+    // dbus-daemon, which the discovery test needs, will not serve a uid it
+    // cannot name. The CLI moves this user to the host's uid, which names it.
+    "remoteUser": "builder",
+    "updateRemoteUserUID": true
+}

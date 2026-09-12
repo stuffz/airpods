@@ -12,11 +12,13 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
+#include <system_error>
 
 namespace bt
 {
@@ -96,17 +98,19 @@ inline std::optional<std::array<uint8_t, kAddressBytes>> ParseAddress(const std:
             return std::nullopt;
         }
 
-        const std::string pair = address.substr(offset, 2);
-        size_t consumed = 0;
-        const unsigned long value = std::stoul(pair, &consumed, kHexBase);
+        // from_chars rather than stoul, which throws on a pair with no digit at
+        // all. These addresses come off the bus, so that is reachable input.
+        uint8_t value = 0;
+        const char *begin = address.data() + offset;
+        const auto [end, error] = std::from_chars(begin, begin + 2, value, kHexBase);
 
-        if (consumed != 2)
+        if (error != std::errc{} || end != begin + 2)
         {
             return std::nullopt;
         }
 
         // Stored little endian, so the written order is reversed.
-        bytes[kAddressBytes - 1 - i] = static_cast<uint8_t>(value);
+        bytes[kAddressBytes - 1 - i] = value;
     }
 
     return bytes;

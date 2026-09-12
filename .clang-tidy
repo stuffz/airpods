@@ -42,9 +42,13 @@ Checks: >
 #                 _sd-common.h; <systemd/sd-bus.h> is the documented entry point.
 #   asm-generic/* SOL_SOCKET and SO_ERROR are defined there and reach the
 #                 program through <sys/socket.h>, which is the POSIX spelling.
+#   qtmetamacros.h, qtestcase.h
+#                 Q_OBJECT, slots, QVERIFY and QCOMPARE are defined there and
+#                 arrive through <QObject> and <QTest>, which is how Qt is
+#                 written; nobody includes either header by name.
 
 CheckOptions:
-  misc-include-cleaner.IgnoreHeaders: 'asm-generic/.*;bits/.*;sys/poll\.h;systemd/.*'
+  misc-include-cleaner.IgnoreHeaders: 'asm-generic/.*;bits/.*;sys/poll\.h;systemd/.*;.*/qtmetamacros\.h;.*/qtestcase\.h'
 
 HeaderFilterRegex: 'src/.*'
 

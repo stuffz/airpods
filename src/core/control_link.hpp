@@ -12,6 +12,7 @@
 #else
 #include "aap/session.hpp"
 #include "bt/bluez_devices.hpp"
+#include "core/link_retry.hpp"
 #include "core/logger.hpp"
 
 #include <QObject>
@@ -103,21 +104,7 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
-    enum class Retry
-    {
-        Soon,
-        Later
-    };
-
     static constexpr int kPollMs = 500;
-    static constexpr int kRetryMs = 5000;
-    // A link that opens but never answers is the buds wedged on their side,
-    // which no reconnect clears. Retrying that at kRetryMs would seize and drop
-    // the single-holder control link every fifteen seconds, for nothing.
-    static constexpr int kWedgedRetryMs = 60000;
-    // The buds answer the handshake in well under a second when they are
-    // listening at all.
-    static constexpr auto kHandshakeTimeout = std::chrono::seconds(10);
 
     void Open()
     {
@@ -151,19 +138,23 @@ private:
             return;
         }
 
-        if (!session.Poll(0))
+        const Link alive = session.Poll(0) ? Link::Alive : Link::Lost;
+        const Handshake handshake = session.IsReady() ? Handshake::Done : Handshake::Pending;
+        const auto sinceOpen =
+            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - openedAt);
+
+        const Retry when = RetryAfterPoll(alive, handshake, sinceOpen);
+        if (when == Retry::None)
         {
-            Drop(Retry::Soon);
             return;
         }
 
-        if (session.IsReady() || Clock::now() - openedAt < kHandshakeTimeout)
+        if (when == Retry::Later)
         {
-            return;
+            LOG_WARN("No handshake from the AirPods; dropping the link and backing off");
         }
 
-        LOG_WARN("No handshake from the AirPods; dropping the link and backing off");
-        Drop(Retry::Later);
+        Drop(when);
     }
 
     void Drop(Retry when)
@@ -181,7 +172,13 @@ private:
             retry.setSingleShot(true);
             QObject::connect(&retry, &QTimer::timeout, [this] { Open(); });
         }
-        retry.start(when == Retry::Soon ? kRetryMs : kWedgedRetryMs);
+        const auto delay = RetryDelay(when);
+        if (!delay)
+        {
+            return;
+        }
+
+        retry.start(*delay);
     }
 
     bool Present() const

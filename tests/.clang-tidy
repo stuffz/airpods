@@ -1,0 +1,16 @@
+# Extends the project configuration; only what QTest breaks is turned off here.
+#
+#   bugprone-unchecked-optional-access
+#                 QVERIFY returns from the test function on failure, which the
+#                 check cannot see, so every `QVERIFY(x.has_value())` followed
+#                 by `x->field` reads as unchecked.
+#   clang-analyzer-core.*
+#                 Both of these fire inside qtestcase.h on the same blind spot,
+#                 and follow the value back into the parser under test.
+
+InheritParentConfig: true
+
+Checks: >
+  -bugprone-unchecked-optional-access,
+  -clang-analyzer-core.CallAndMessage,
+  -clang-analyzer-core.UndefinedBinaryOperatorResult

@@ -15,6 +15,7 @@
 #include "core/key_store.hpp"
 #include "core/logger.hpp"
 #include "core/options.hpp"
+#include "core/status_line.hpp"
 #include "core/stop_flag.hpp"
 #include "ui/battery_icon.hpp"
 #include "ui/main_window.hpp"
@@ -106,9 +107,9 @@ private:
 
     static constexpr int kFailure = 1;
     static constexpr int kTickMs = 500;
+
     // Long enough that a quiet stretch is genuinely unusual: the pods broadcast
     // every second or two whenever they are awake and anywhere near.
-    static constexpr auto kQuietTimeout = std::chrono::minutes(10);
 
     bool StartScanning()
     {
@@ -371,34 +372,6 @@ private:
         Refresh(link.IsOpen());
     }
 
-    // Ordered so the most actionable wins: a scanner that is not running hides
-    // everything underneath it. Derived rather than remembered, so it can
-    // neither outlive its cause nor miss one appearing between audits.
-    std::string Trouble() const
-    {
-        if (!scanner.HasAdapter())
-        {
-            return "Error: no Bluetooth adapter";
-        }
-
-        if (!scanner.IsPowered())
-        {
-            return "Error: Bluetooth is off";
-        }
-
-        if (!scanner.IsScanning())
-        {
-            return "Error: Bluetooth scanning is not running";
-        }
-
-        if (!keys.HasEncryption())
-        {
-            return "Error: no proximity keys, run --keys";
-        }
-
-        return {};
-    }
-
     void Refresh(bool connected)
     {
         tray.Update(battery, connected, RadioState());
@@ -407,33 +380,20 @@ private:
         window.ShowAge(Status());
     }
 
-    // The window keeps one line for this, so a fault wins over the age: how old
-    // a reading is only matters while everything that could refresh it works.
+    // Everything the line is decided from, read at the moment it is asked for.
     std::string Status() const
     {
-        std::string fault = Trouble();
-        if (!fault.empty())
-        {
-            return fault;
-        }
+        const auto now = Clock::now();
+        const auto elapsed = [now](Clock::time_point since)
+        { return std::chrono::duration_cast<std::chrono::seconds>(now - since); };
 
-        const bool quiet = Clock::now() - lastArrival >= kQuietTimeout;
-
-        if (quiet && link.IsOpen())
-        {
-            return "Error: connected but silent";
-        }
-
-        if (staleness)
-        {
-            // Plus this run's own time: a stored reading does not get any
-            // fresher while the app sits here without a new one.
-            const auto ran =
-                std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - startedAt);
-            return "Last seen " + Age(*staleness + ran);
-        }
-
-        return quiet ? "No AirPods in range, Bluetooth is on" : std::string{};
+        return StatusLine({
+            {scanner.HasAdapter(), scanner.IsPowered(), scanner.IsScanning(), keys.HasEncryption()},
+            link.IsOpen() ? LinkHealth::Open : LinkHealth::Closed,
+            elapsed(lastArrival),
+            elapsed(startedAt),
+            staleness,
+        });
     }
 
     // Refreshed on the way out so the age on it is current whenever it is
@@ -442,34 +402,6 @@ private:
     {
         Refresh(link.IsOpen());
         window.Toggle();
-    }
-
-    static std::string Age(std::chrono::seconds since)
-    {
-        const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(since).count();
-
-        if (minutes < 1)
-        {
-            return "just now";
-        }
-
-        constexpr long kMinutesPerHour = 60;
-        constexpr long kHoursPerDay = 24;
-
-        if (minutes < kMinutesPerHour)
-        {
-            return std::to_string(minutes) + " min ago";
-        }
-
-        const long hours = minutes / kMinutesPerHour;
-
-        if (hours < kHoursPerDay)
-        {
-            return std::to_string(hours) + (hours == 1 ? " hour ago" : " hours ago");
-        }
-
-        const long days = hours / kHoursPerDay;
-        return std::to_string(days) + (days == 1 ? " day ago" : " days ago");
     }
 
     std::string Heading() const

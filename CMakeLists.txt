@@ -36,3 +36,10 @@ endif()
 if(NOT MSVC)
     target_compile_options(airpods PRIVATE -Wall -Wextra -Wshadow -Wnon-virtual-dtor)
 endif()
+
+# The Windows build runs through the same file with a MinGW toolchain, and
+# nothing there can run the tests it would have built.
+if(NOT CMAKE_CROSSCOMPILING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

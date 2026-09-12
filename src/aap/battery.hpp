@@ -61,15 +61,16 @@ class Battery
 public:
     bool Parse(std::span<const uint8_t> packet)
     {
-        if (!StartsWith(packet, kBatteryReport))
-        {
-            return false;
-        }
-
         constexpr size_t kHeaderSize = 7; // header plus the count byte
         constexpr size_t kEntrySize = 5;
         constexpr size_t kMaxEntries = 3;
         constexpr uint8_t kEntryMarker = 0x01;
+
+        // The prefix alone leaves the count byte off the end of a short packet.
+        if (!StartsWith(packet, kBatteryReport) || packet.size() < kHeaderSize)
+        {
+            return false;
+        }
 
         const uint8_t count = packet[kHeaderSize - 1];
         if (count > kMaxEntries || packet.size() != kHeaderSize + (kEntrySize * count))
